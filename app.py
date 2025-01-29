@@ -1,4 +1,3 @@
-
 import os
 import logging
 import datetime
@@ -49,7 +48,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-REFERRAL_BONUS = int(os.getenv("REFERRAL_BONUS", "0"))
+REFERRAL_BONUS = int(os.getenv("REFERRAL_BONUS", 5))
 
 # -----------------------------------------------------------------------------
 # 3. Initialize MongoDB and Gemini
@@ -102,15 +101,19 @@ async def process_referral(referral_code: str, new_user_id: int):
     try:
         # Example: referral code is "REF<chat_id>"
         # Let's parse the referred chat_id
+        
+        print(referral_code,1)
         if not referral_code.startswith("REF"):
             return
-
+        print(referral_code,2)
         referrer_id = int(referral_code.replace("REF", ""))
+        print(referrer_id,3)
 
         referrer_user = db.users.find_one({"chat_id": referrer_id})
         new_user = db.users.find_one({"chat_id": new_user_id})
-
+        print(referrer_user,new_user,5)
         if referrer_user and new_user:
+            print(referrer_user,new_user,5)
             # Add bonus to both
             db.users.update_one(
                 {"chat_id": referrer_id},
@@ -145,6 +148,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Check referral argument (if any)
         referral_code = None
+    
         if context.args:
             referral_code = context.args[0]
 
@@ -217,7 +221,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # 1) Translate user message to English if needed
         #    Example scenario: if we want to analyze in English.
-        translated_text =await translate_text(user_text, target_lang="en")
+        translated_text = await translate_text(user_text, target_lang="en")
 
         # 2) Analyze sentiment (simple approach)
         sentiment_result = analyze_sentiment(translated_text)
@@ -233,20 +237,20 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         }
         db.messages.insert_one(message_doc)
 
-        # 4) Call Gemini for response
+        # 4) Retrieve the last 3 chat exchanges
+        last_messages = list(db.messages.find({"chat_id": chat_id}).sort("timestamp", -1).limit(3))
+        conversation_history = "\n".join([msg.get("translated_text", "") for msg in reversed(last_messages)])
+
+        # 5) Call Gemini for response
         try:
-            # palm_response = palm.generate_text(
-            #     model="models/text-bison-001",
-            #     prompt=translated_text,
-            #     temperature=0.2
-            # )
-            palm_response = palm.GenerativeModel("gemini-2.0-flash-exp").generate_content(translated_text, generation_config = GenerationConfig(max_output_tokens=500))
+            prompt = f"Conversation history:\n{conversation_history}\nUser: {translated_text}\nAI:"
+            palm_response = palm.GenerativeModel("gemini-2.0-flash-exp").generate_content(prompt, generation_config=GenerationConfig(max_output_tokens=500))
             gemini_text = palm_response.text if palm_response else "No response from Gemini."
         except Exception as e:
             logger.exception("Gemini API error")
             gemini_text = "Sorry, I'm having trouble connecting to the AI service."
 
-        # 5) Store Gemini response
+        # 6) Store Gemini response
         response_doc = {
             "chat_id": chat_id,
             "message_type": "gemini_response",
@@ -255,7 +259,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         }
         db.messages.insert_one(response_doc)
 
-        # 6) Possibly translate response back to user’s language
+        # 7) Possibly translate response back to user’s language
         #    For example, if we detect user language is Spanish, etc.
         #    Let's assume we just echo in English for now.
         await update.message.reply_text(gemini_text)
